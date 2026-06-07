@@ -1,0 +1,44 @@
+name: Daily Tax News Spider
+
+# 触发条件
+on:
+  schedule:
+    # 每天北京时间早上 8:00 执行 (由于时差，这里填 UTC 时间的 0:00)
+    - cron: '0 0 * * *'
+  # 允许我们在网页上随时手动点击运行测试
+  workflow_dispatch: 
+
+# 赋予 GitHub Action 写入仓库的权限（为了能把生成的 json 文件保存下来）
+permissions:
+  contents: write
+
+jobs:
+  run-spider:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 配置 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: 运行财税爬虫
+      run: |
+        python ctaxnews_spider.py
+        
+    - name: 提交并推送到仓库
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add tax_news.json
+        # 如果没有抓到新数据（json没变化），忽略报错继续执行
+        git commit -m "Auto-update tax news data" || echo "No changes to commit"
+        git push

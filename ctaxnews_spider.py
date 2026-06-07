@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import json
 
 def crawl_ctaxnews():
     """
@@ -83,6 +84,14 @@ def crawl_esnai_law():
             # 1. 标题存在且长度大于8个字符（规避短词和导航栏）
             # 2. 必须包含具体的链接
             if title and len(title) > 8 and href and href != '#':
+                
+                # 【新增防御】过滤掉侧边栏的老旧专题、汇编，以及带有 action=subject 的目录页
+                if 'action=subject' in href or '汇编' in title or '专辑' in title:
+                    continue
+                # 【新增防御】直接过滤掉标题中明显带有旧年份的内容
+                if any(year in title for year in ['2014', '2015', '2016', '2017', '2018']):
+                    continue
+                    
                 # 拼接完整绝对路径
                 if href.startswith('/'):
                     full_url = "https://law.esnai.cn" + href
@@ -118,7 +127,6 @@ def crawl_chinatax():
     """
     抓取《国家税务总局-政策法规库》最新文件
     URL: https://fgk.chinatax.gov.cn/zcfgk/c100006/listflfg.html
-    注意：政府网站可能有强反爬或动态加载，此处为基础结构。
     """
     url = "https://fgk.chinatax.gov.cn/zcfgk/c100006/listflfg.html"
     headers = {
@@ -132,18 +140,21 @@ def crawl_chinatax():
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 假设列表在一个特定的 ul 或 div 中（需根据实际DOM微调）
         for a_tag in soup.select('a'):
             title = a_tag.text.strip()
             href = a_tag.get('href', '')
-            if title and '号' in title and len(title) > 10: # 政策文件通常带文号且较长
+            if title and '号' in title and len(title) > 10: 
+                # 【新增防御】过滤掉网页底部的 ICP 备案、公网安备、版权声明等系统词汇
+                if any(kw in title for kw in ['ICP', '公网安备', '版权', '主办', '技术支持']):
+                    continue
+                
                 full_url = href if href.startswith('http') else "https://fgk.chinatax.gov.cn" + href
                 news_items.append({
                     "title": title,
                     "url": full_url,
                     "source": "国家税务总局",
                     "category": "policy",
-                    "publishedAt": datetime.now().strftime("%Y-%m-%d") # 实际情况应从DOM提取日期
+                    "publishedAt": datetime.now().strftime("%Y-%m-%d") 
                 })
         return news_items[:15]
     except Exception as e:
@@ -169,7 +180,10 @@ def crawl_shui5():
             if a_tag:
                 title = a_tag.text.strip()
                 href = a_tag.get('href', '')
-                if title and len(title) > 8 and '/article/' in href:
+                
+                # 【关键优化】税屋的首页分为多个区块，不要限制特定的路径。
+                # 只要它是装在 li 列表里、以 .html 结尾的正式内容页链接，并且标题足够长，就全部抓取。
+                if title and len(title) > 8 and href.endswith('.html'):
                     full_url = href if href.startswith('http') else "https://www.shui5.cn" + href
                     news_items.append({
                         "title": title,
@@ -178,7 +192,16 @@ def crawl_shui5():
                         "category": "policy",
                         "publishedAt": datetime.now().strftime("%Y-%m-%d")
                     })
-        return news_items[:15]
+                    
+        # 去重（因为推荐和资讯区块可能有重复的文章）
+        unique_news = []
+        seen_urls = set()
+        for item in news_items:
+            if item["url"] not in seen_urls:
+                unique_news.append(item)
+                seen_urls.add(item["url"])
+                
+        return unique_news[:15]
     except Exception as e:
         print(f"抓取税屋失败: {e}")
         return []
@@ -215,34 +238,61 @@ def crawl_mof():
         print(f"抓取财政部失败: {e}")
         return []
 
+def save_to_json(data, filename="tax_news.json"):
+    """
+    将整合后的所有新闻数据保存为 JSON 文件
+    """
+    try:
+        # ensure_ascii=False 保证中文正常显示，indent=2 让生成的 JSON 有良好的排版格式
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"\n✅ 成功！已将 {len(data)} 条财税动态保存至本地文件: {filename}")
+    except Exception as e:
+        print(f"\n❌ 保存 JSON 文件失败: {e}")
+
 # ==========================================
 # 本地测试代码
 # ==========================================
 if __name__ == "__main__":
     print("开始执行财税新闻爬虫矩阵...\n")
     
-    # 1. 测试税务报
+    # 建立一个空列表，用于装载所有站点的结果
+    all_tax_news = []
+    
+    # 1. 抓取税务报
     ctax_result = crawl_ctaxnews()
-    print(f"【中国税务报】共抓取到 {len(ctax_result)} 条头版新闻：")
-    for news in ctax_result[:3]:  # 只打印前3条预览
-        print(f" - [{news['category']}] {news['title']}\n   {news['url']}")
+    all_tax_news.extend(ctax_result) # 汇总数据
+    print(f"【中国税务报】共抓取到 {len(ctax_result)} 条头版新闻。")
         
-    print("\n" + "-"*50 + "\n")
+    print("-" * 40)
     
-    # 2. 测试会计视野
+    # 2. 抓取会计视野
     esnai_result = crawl_esnai_law()
-    print(f"【会计视野法规库】共抓取到 {len(esnai_result)} 条最新政策法规：")
-    for news in esnai_result[:3]: # 只打印前3条预览
-        print(f" - [{news['category']}] {news['title']}\n   {news['url']}")
+    all_tax_news.extend(esnai_result)
+    print(f"【会计视野法规库】共抓取到 {len(esnai_result)} 条最新政策法规。")
         
-    print("\n" + "-"*50 + "\n")
+    print("-" * 40)
     
-    # 3. 测试新增站点
+    # 3. 抓取国家税务总局
     chinatax_result = crawl_chinatax()
-    print(f"【国家税务总局】共抓取到 {len(chinatax_result)} 条政策：")
+    all_tax_news.extend(chinatax_result)
+    print(f"【国家税务总局】共抓取到 {len(chinatax_result)} 条政策。")
     
+    print("-" * 40)
+    
+    # 4. 抓取税屋
     shui5_result = crawl_shui5()
-    print(f"【税屋】共抓取到 {len(shui5_result)} 条政策：")
+    all_tax_news.extend(shui5_result)
+    print(f"【税屋】共抓取到 {len(shui5_result)} 条政策。")
     
+    print("-" * 40)
+    
+    # 5. 抓取财政部
     mof_result = crawl_mof()
-    print(f"【财政部】共抓取到 {len(mof_result)} 条政策：")
+    all_tax_news.extend(mof_result)
+    print(f"【财政部】共抓取到 {len(mof_result)} 条政策。")
+    
+    print("=" * 50)
+    
+    # 最后一步：统一保存为 JSON 文件
+    save_to_json(all_tax_news)
